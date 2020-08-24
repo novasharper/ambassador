@@ -214,7 +214,7 @@ class ResourceFetcher:
 
         if os.path.isfile(os.path.join(basedir, '.ambassador_ignore_ingress')):
             self.aconf.post_error("Ambassador is not permitted to read Ingress resources. Please visit https://www.getambassador.io/user-guide/ingress-controller/ for more information. You can continue using Ambassador, but Ingress resources will be ignored...")
-        
+
         # Expand environment variables allowing interpolation in manifests.
         serialization = os.path.expandvars(serialization)
 
@@ -450,6 +450,9 @@ class ResourceFetcher:
         # Let's see if our Ingress resource has Ambassador annotations on it
         annotations = metadata.get('annotations', {})
         ambassador_annotations = annotations.get('getambassador.io/config', None)
+        # Also, check to see if there are any annotations that should be used to
+        # decorate the generated mappings
+        ingress_annotations = annotations.get('getambassador.io/ingress-config', None)
 
         parsed_ambassador_annotations = None
         if ambassador_annotations is not None:
@@ -459,6 +462,26 @@ class ResourceFetcher:
                 parsed_ambassador_annotations = parse_yaml(ambassador_annotations)
             except yaml.error.YAMLError as e:
                 self.logger.debug("could not parse YAML: %s" % e)
+
+        parsed_ingress_annotations = None
+        if ingress_annotations is not None:
+            try:
+                parsed_ingress_annotations = parse_yaml(ingress_annotations)
+            except yaml.error.YAMLError as e:
+                self.logger.debug("could not parse YAML: %s" % e)
+
+            invalid_keys = [
+                'ambassador_id',
+                'host',
+                'host_regex',
+                'prefix',
+                'prefix_exact',
+                'precedence',
+                'service',
+            ]
+            for key in invalid_keys:
+                parsed_ingress_annotations.pop(key, None)
+                self.logger.debug("ignoring invald key: %s" % key)
 
         ambassador_id = annotations.get('getambassador.io/ambassador-id', 'default')
 
@@ -536,6 +559,9 @@ class ResourceFetcher:
             if metadata_labels:
                 default_backend_mapping['metadata']['labels'] = metadata_labels
 
+            if parsed_ingress_annotations:
+                default_backend_mapping['spec'].update(parsed_ingress_annotations)
+
             self.logger.debug(f"Generated mapping from Ingress {ingress_name}: {default_backend_mapping}")
             self.handle_k8s(default_backend_mapping)
 
@@ -584,6 +610,9 @@ class ResourceFetcher:
                 if metadata_labels:
                     path_mapping['metadata']['labels'] = metadata_labels
 
+                if parsed_ingress_annotations:
+                    path_mapping['spec'].update(parsed_ingress_annotations)
+
                 if rule_host is not None:
                     if rule_host.startswith('*.'):
                         # Ingress allow specifying hosts with a single wildcard as the first label in the hostname.
@@ -614,7 +643,7 @@ class ResourceFetcher:
                 for p in parsed_ambassador_annotations:
                     if p.get('metadata_labels') is None:
                         p['metadata_labels'] = metadata_labels
-            
+
             # Force validation for all of these objects.
             for p in parsed_ambassador_annotations:
                 p['_force_validation'] = True
